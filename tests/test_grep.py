@@ -4,9 +4,8 @@ r'''
 Set up
 
     >>> import grin
-    >>> from cStringIO import StringIO
+    >>> from six.moves import cStringIO as StringIO
     >>> import re
-    >>> 
     >>> all_foo = """\
     ... foo
     ... foo
