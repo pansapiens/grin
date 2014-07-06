@@ -29,7 +29,7 @@ def text_file(filename, open=open):
     lines = ['foo\n', 'bar\n'] * 100
     lines.append('baz\n')
     lines.extend(['foo\n', 'bar\n'] * 100)
-    with open(filename, 'wt') as f:
+    with open(filename, 'w') as f:
         f.writelines(lines)
 
 
