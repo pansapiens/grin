@@ -2,6 +2,8 @@
 """ grin searches text files.
 """
 
+from __future__ import print_function
+
 import bisect
 import fnmatch
 import gzip
@@ -11,8 +13,15 @@ import re
 import shlex
 import stat
 import sys
+import io
 
 import argparse
+from six import b, int2byte, reraise
+from six.moves import map, filter
+
+
+def int2bytes(ints):
+    return b('').join(map(int2byte, ints))
 
 
 #### Constants ####
@@ -24,25 +33,25 @@ MATCH = 0
 POST = 1
 
 # Use file(1)'s choices for what's text and what's not.
-TEXTCHARS = ''.join(map(chr, [7,8,9,10,12,13,27] + range(0x20, 0x100)))
-ALLBYTES = ''.join(map(chr, range(256)))
+TEXTCHARS = int2bytes((7, 8, 9, 10, 12, 13, 27) + tuple(range(0x20, 0x100)))
+ALLBYTES = int2bytes(range(256))
 
 COLOR_TABLE = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan',
                'white', 'default']
 COLOR_STYLE = {
-        'filename': dict(fg="green", bold=True),
-        'searchterm': dict(fg="black", bg="yellow"),
-        }
+    'filename': dict(fg="green", bold=True),
+    'searchterm': dict(fg="black", bg="yellow")
+}
 
 # gzip magic header bytes.
-GZIP_MAGIC = '\037\213'
+GZIP_MAGIC = b('\037\213')
 
 # Target amount of data to read into memory at a time.
 READ_BLOCKSIZE = 16 * 1024 * 1024
 
 
-def is_binary_string(bytes):
-    """ Determine if a string is classified as binary rather than text.
+def is_binary_string(b):
+    """Determine if a string is classified as binary rather than text.
 
     Parameters
     ----------
@@ -52,46 +61,53 @@ def is_binary_string(bytes):
     -------
     is_binary : bool
     """
-    nontext = bytes.translate(ALLBYTES, TEXTCHARS)
-    return bool(nontext)
-    
+    return bool(b.translate(ALLBYTES, TEXTCHARS))
+
+
 def get_line_offsets(block):
-    """ Compute the list of offsets in DataBlock 'block' which correspond to
+    """Compute the list of offsets in DataBlock 'block' which correspond to
     the beginnings of new lines.
 
-    Returns: (offset list, count of lines in "current block")
+    Parameters
+    ----------
+    block : DataBlock
+
+    Returns
+    -------
+    ret : (offset list, count of lines in "current block")
     """
-    # Note: this implementation based on string.find() benchmarks about twice as
-    # fast as a list comprehension using re.finditer().
+    # Note: this implementation based on string.find() benchmarks about twice
+    # as fast as a list comprehension using re.finditer().
     line_offsets = [0]
-    line_count = 0    # Count of lines inside range [block.start, block.end) *only*
+    line_count = 0  # Count of lines inside range [block.start, block.end) *only*
     s = block.data
     while True:
         next_newline = s.find('\n', line_offsets[-1])
         if next_newline < 0:
-            # Tack on a final "line start" corresponding to EOF, if not done already.
-            # This makes it possible to determine the length of each line by computing
-            # a difference between successive elements.
+            # Tack on a final "line start" corresponding to EOF, if not done
+            # already.  This makes it possible to determine the length of each
+            # line by computing a difference between successive elements.
             if line_offsets[-1] < len(s):
                 line_offsets.append(len(s))
-            return (line_offsets, line_count)
+            return line_offsets, line_count
         else:
             line_offsets.append(next_newline + 1)
             # Keep track of the count of lines within the "current block"
             if next_newline >= block.start and next_newline < block.end:
                 line_count += 1
-            
+
+
 def colorize(s, fg=None, bg=None, bold=False, underline=False, reverse=False):
-    """ Wraps a string with ANSI color escape sequences corresponding to the
+    """Wraps a string with ANSI color escape sequences corresponding to the
     style parameters given.
-    
+
     All of the color and style parameters are optional.
-    
+
     Parameters
     ----------
     s : str
     fg : str
-        Foreground color of the text.  One of (black, red, green, yellow, blue, 
+        Foreground color of the text.  One of (black, red, green, yellow, blue,
         magenta, cyan, white, default)
     bg : str
         Background color of the text.  Color choices are the same as for fg.
@@ -106,7 +122,7 @@ def colorize(s, fg=None, bg=None, bold=False, underline=False, reverse=False):
     -------
     A string with embedded color escape sequences.
     """
-    
+
     style_fragments = []
     if fg in COLOR_TABLE:
         # Foreground colors go from 30-39
@@ -120,30 +136,27 @@ def colorize(s, fg=None, bg=None, bold=False, underline=False, reverse=False):
         style_fragments.append(4)
     if reverse:
         style_fragments.append(7)
-    style_start = '\x1b[' + ';'.join(map(str,style_fragments)) + 'm'
+    style_start = '\x1b[' + ';'.join(map(str, style_fragments)) + 'm'
     style_end = '\x1b[0m'
     return style_start + s + style_end
 
 
 class Options(dict):
-    """ Simple options.
-    """
-
+    """Simple options."""
     def __init__(self, *args, **kwds):
-        dict.__init__(self, *args, **kwds)
+        super(Options, self).__init__(*args, **kwds)
         self.__dict__ = self
 
 
 def default_options():
-    """ Populate the default options.
-    """
+    """Populate the default options."""
     opt = Options(
-        before_context = 0,
-        after_context = 0,
-        show_line_numbers = True,
-        show_match = True,
-        show_filename = True,
-        show_emacs = False,
+        before_context=0,
+        after_context=0,
+        show_line_numbers=True,
+        show_match=True,
+        show_filename=True,
+        show_emacs=False,
         skip_hidden_dirs=False,
         skip_hidden_files=False,
         skip_backup_files=True,
@@ -157,7 +170,7 @@ def default_options():
 
 
 class DataBlock(object):
-    """ This class holds a block of data read from a file, along with
+    """This class holds a block of data read from a file, along with
     some preceding and trailing context.
 
     Attributes
@@ -181,18 +194,18 @@ class DataBlock(object):
         self.before_count = before_count
         self.is_last = is_last
 
+
 EMPTY_DATABLOCK = DataBlock()
 
 
 class GrepText(object):
-    """ Grep a single file for a regex by iterating over the lines in a file.
+    """Grep a single file for a regex by iterating over the lines in a file.
 
     Attributes
     ----------
     regex : compiled regex
     options : Options or similar
     """
-
     def __init__(self, regex, options=None):
         # The compiled regex.
         self.regex = regex
@@ -205,22 +218,22 @@ class GrepText(object):
         self.options = options
 
     def read_block_with_context(self, prev, fp, fp_size):
-        """ Read a block of data from the file, along with some surrounding
+        """Read a block of data from the file, along with some surrounding
         context.
-        
+
         Parameters
         ----------
         prev : DataBlock, or None
-            The result of the previous application of read_block_with_context(),
-            or None if this is the first block.
+            The result of the previous application of
+            ``read_block_with_context()``, or None if this is the first block.
 
         fp : filelike object
             The source of block data.
-        
+
         fp_size : int or None
             Size of the file in bytes, or None if the size could not be
             determined.
-        
+
         Returns
         -------
         A DataBlock representing the "current" block along with context.
@@ -240,13 +253,9 @@ class GrepText(object):
                 # FAST PATH: the entire file fits into a single block, so we
                 # can avoid the overhead of locating lines of 'before' and
                 # 'after' context.
-                result = DataBlock(
-                    data = block_main,
-                    start = 0,
-                    end = len(block_main),
-                    before_count = 0,
-                    is_last = True,
-                )
+                result = DataBlock(data=block_main, start=0,
+                                   end=len(block_main), before_count=0,
+                                   is_last=True)
                 return result
             else:
                 prev = EMPTY_DATABLOCK
@@ -270,13 +279,14 @@ class GrepText(object):
             before_start += 1
         before_lines = prev.data[before_start:prev.end]
         # Using readline() to force this block out to a newline boundary...
-        curr_block = (prev.data[prev.end:] + block_main +
-            ('' if is_last_block else fp.readline()))
+        curr_block = (prev.data[prev.end:] + block_main + ('' if is_last_block
+                                                           else fp.readline()))
         # Read in some lines of 'after' context.
         if is_last_block:
             after_lines = ''
         else:
-            after_lines_list = [fp.readline() for i in range(self.options.after_context)]
+            after_lines_list = [fp.readline() for i in
+                                range(self.options.after_context)]
             after_lines = ''.join(after_lines_list)
 
         result = DataBlock(
@@ -289,7 +299,7 @@ class GrepText(object):
         return result
 
     def do_grep(self, fp):
-        """ Do a full grep.
+        """Do a full grep.
 
         Parameters
         ----------
@@ -313,13 +323,15 @@ class GrepText(object):
                     fp_size = status.st_size
                 else:
                     fp_size = None
-            except AttributeError:  # doesn't support fileno()
+            except (AttributeError, io.UnsupportedOperation):
+                # doesn't support fileno()
                 fp_size = None
 
         block = self.read_block_with_context(None, fp, fp_size)
         while block.end > block.start:
-            (block_line_count, block_context) = self.do_grep_block(block,
-                    line_count - block.before_count)
+            (block_line_count,
+             block_context) = self.do_grep_block(block, line_count -
+                                                 block.before_count)
             context += block_context
             if block.is_last:
                 break
@@ -328,11 +340,11 @@ class GrepText(object):
             if next_block.end > next_block.start:
                 if block_line_count is None:
                     # If the file contains N blocks, then in the best case we
-                    # will need to compute line offsets for the first N-1 blocks.
-                    # Most files will fit within a single block, so if there are
-                    # no regex matches then we can typically avoid computing *any*
-                    # line offsets.
-                    (_, block_line_count) = get_line_offsets(block)
+                    # will need to compute line offsets for the first N-1
+                    # blocks.  Most files will fit within a single block, so if
+                    # there are no regex matches then we can typically avoid
+                    # computing *any* line offsets.
+                    _, block_line_count = get_line_offsets(block)
                 line_count += block_line_count
             block = next_block
 
@@ -364,27 +376,36 @@ class GrepText(object):
         block_context = []
         line_offsets = None
         line_count = None
-        
+
         def build_match_context(match):
-            match_line_num = bisect.bisect(line_offsets, match.start() + block.start) - 1
+            match_line_num = bisect.bisect(line_offsets, match.start() +
+                                           block.start) - 1
             before_count = min(before, match_line_num)
-            after_count = min(after, (len(line_offsets) - 1) - match_line_num - 1)
-            match_line = block.data[line_offsets[match_line_num]:line_offsets[match_line_num + 1]]
+            after_count = min(after, (len(line_offsets) - 1) - match_line_num -
+                              1)
+            match_line = \
+                block.data[line_offsets[match_line_num]:
+                           line_offsets[match_line_num + 1]]
             spans = [m.span() for m in self.regex.finditer(match_line)]
 
             before_ctx = [(i + line_num_offset, PRE,
-                block.data[line_offsets[i]:line_offsets[i+1]], None)
-                    for i in range(match_line_num - before_count, match_line_num)]
+                           block.data[line_offsets[i]:line_offsets[i + 1]],
+                           None) for i in range(match_line_num - before_count,
+                                                match_line_num)]
             after_ctx = [(i + line_num_offset, POST,
-                block.data[line_offsets[i]:line_offsets[i+1]], None)
-                    for i in range(match_line_num + 1, match_line_num + after_count + 1)]
-            match_ctx = [(match_line_num + line_num_offset, MATCH, match_line, spans)]
+                          block.data[line_offsets[i]:line_offsets[i + 1]],
+                          None) for i in range(match_line_num + 1,
+                                               match_line_num + after_count +
+                                               1)]
+            match_ctx = [(match_line_num + line_num_offset, MATCH, match_line,
+                          spans)]
             return before_ctx + match_ctx + after_ctx
 
         # Using re.MULTILINE here, so ^ and $ will work as expected.
         for match in self.regex_m.finditer(block.data[block.start:block.end]):
-            # Computing line offsets is expensive, so we do it lazily.  We don't
-            # take the extra CPU hit unless there's a regex match in the file.
+            # Computing line offsets is expensive, so we do it lazily.  We
+            # don't take the extra CPU hit unless there's a regex match in the
+            # file.
             if line_offsets is None:
                 (line_offsets, line_count) = get_line_offsets(block)
             block_context += build_match_context(match)
@@ -457,7 +478,7 @@ class GrepText(object):
                         color_substring = colorize(old_substring, **style)
                         line = line[:start] + color_substring + line[end:]
                         total_offset += len(color_substring) - len(old_substring)
-                        
+
                 ns = dict(
                     lineno = i+1,
                     sep = {PRE: '-', POST: '+', MATCH: ':'}[kind],
@@ -471,7 +492,6 @@ class GrepText(object):
 
         text = ''.join(lines)
         return text
-
 
     def grep_a_file(self, filename, opener=open):
         """ Grep a single file that actually exists on the file system.
@@ -495,7 +515,8 @@ class GrepText(object):
             f = sys.stdin
             filename = '<STDIN>'
         else:
-            # 'r' does the right thing for both open ('rt') and gzip.open ('rb')
+            # 'r' does the right thing for both open ('rt') and gzip.open
+            # ('rb')
             f = opener(filename, 'r')
         try:
             unique_context = self.do_grep(f)
@@ -507,7 +528,7 @@ class GrepText(object):
 
 
 class FileRecognizer(object):
-    """ Configurable way to determine what kind of file something is.
+    """Configurable way to determine what kind of file something is.
 
     Attributes
     ----------
@@ -532,7 +553,6 @@ class FileRecognizer(object):
         The number of bytes to check at the beginning and end of a file for
         binary characters.
     """
-
     def __init__(self, skip_hidden_dirs=False, skip_hidden_files=False,
                  skip_backup_files=False, skip_dirs=set(), skip_exts=set(),
                  skip_symlink_dirs=True, skip_symlink_files=True,
@@ -549,17 +569,17 @@ class FileRecognizer(object):
         self.skip_exts_simple = set()
         self.skip_exts_endswith = list()
         for ext in skip_exts:
-            if os.path.splitext('foo.bar'+ext)[1] == ext:
+            if os.path.splitext('foo.bar' + ext)[1] == ext:
                 self.skip_exts_simple.add(ext)
             else:
                 self.skip_exts_endswith.append(ext)
-        
+
         self.skip_symlink_dirs = skip_symlink_dirs
         self.skip_symlink_files = skip_symlink_files
         self.binary_bytes = binary_bytes
 
     def is_binary(self, filename):
-        """ Determine if a given file is binary or not.
+        """Determine if a given file is binary or not.
 
         Parameters
         ----------
@@ -569,13 +589,11 @@ class FileRecognizer(object):
         -------
         is_binary : bool
         """
-        f = open(filename, 'rb')
-        is_binary = self._is_binary_file(f)
-        f.close()
-        return is_binary
+        with open(filename, 'rb') as f:
+            return self._is_binary_file(f)
 
     def _is_binary_file(self, f):
-        """ Determine if a given filelike object has binary data or not.
+        """Determine if a given filelike object has binary data or not.
 
         Parameters
         ----------
@@ -586,15 +604,16 @@ class FileRecognizer(object):
         is_binary : bool
         """
         try:
-            bytes = f.read(self.binary_bytes)
-        except Exception, e:
-            # When trying to read from something that looks like a gzipped file,
-            # it may be corrupt. If we do get an error, assume that the file is binary.
+            b = f.read(self.binary_bytes)
+        except Exception:
+            # When trying to read from something that looks like a gzipped
+            # file, it may be corrupt. If we do get an error, assume that the
+            # file is binary.
             return True
-        return is_binary_string(bytes)
+        return is_binary_string(b)
 
     def is_gzipped_text(self, filename):
-        """ Determine if a given file is a gzip-compressed text file or not.
+        """Determine if a given file is a gzip-compressed text file or not.
 
         If the uncompressed file is binary and not text, then this will return
         False.
@@ -608,9 +627,8 @@ class FileRecognizer(object):
         is_gzipped_text : bool
         """
         is_gzipped_text = False
-        f = open(filename, 'rb')
-        marker = f.read(2)
-        f.close()
+        with open(filename, 'rb') as f:
+            marker = f.read(2)
         if marker == GZIP_MAGIC:
             fp = gzip.open(filename)
             try:
@@ -625,15 +643,15 @@ class FileRecognizer(object):
         return is_gzipped_text
 
     def recognize(self, filename):
-        """ Determine what kind of thing a filename represents.
+        """Determine what kind of thing a filename represents.
 
         It will also determine what a directory walker should do with the
         file:
 
             'text' :
                 It should should be grepped for the pattern and the matching
-                lines displayed. 
-            'binary' : 
+                lines displayed.
+            'binary' :
                 The file is binary and should be either ignored or grepped
                 without displaying the matching lines depending on the
                 configuration.
@@ -673,13 +691,12 @@ class FileRecognizer(object):
                 return 'skip'
         except OSError:
             return 'unreadable'
-        
+
     def recognize_directory(self, filename):
-        """ Determine what to do with a directory.
-        """
+        """Determine what to do with a directory."""
         basename = os.path.split(filename)[-1]
-        if (self.skip_hidden_dirs and basename.startswith('.') and 
-            basename not in ('.', '..')):
+        if (self.skip_hidden_dirs and basename.startswith('.') and
+            basename not in (os.curdir, os.pardir)):
             return 'skip'
         if self.skip_symlink_dirs and os.path.islink(filename):
             return 'link'
@@ -697,7 +714,7 @@ class FileRecognizer(object):
             return 'skip'
         if self.skip_symlink_files and os.path.islink(filename):
             return 'link'
-        
+
         filename_nc = os.path.normcase(filename)
         ext = os.path.splitext(filename_nc)[1]
         if ext in self.skip_exts_simple or ext.startswith('.~'):
@@ -749,8 +766,7 @@ class FileRecognizer(object):
 
 
 def get_grin_arg_parser(parser=None):
-    """ Create the command-line parser.
-    """
+    """Create the command-line parser."""
     if parser is None:
         parser = argparse.ArgumentParser(
             description="Search text files for a given regex pattern.",
@@ -776,10 +792,10 @@ def get_grin_arg_parser(parser=None):
     parser.add_argument('-N', '--no-line-number', action='store_false',
         dest='show_line_numbers', help="do not show the line numbers")
     parser.add_argument('-H', '--with-filename', action='store_true',
-        dest='show_filename', default=True, 
+        dest='show_filename', default=True,
         help="show the filenames of files that match [default]")
     parser.add_argument('--without-filename', action='store_false',
-        dest='show_filename', 
+        dest='show_filename',
         help="do not show the filenames of files that match")
     parser.add_argument('--emacs', action='store_true',
         dest='show_emacs',
@@ -844,9 +860,9 @@ def get_grin_arg_parser(parser=None):
 
     return parser
 
+
 def get_grind_arg_parser(parser=None):
-    """ Create the command-line parser for the find-like companion program.
-    """
+    """Create the command-line parser for the find-like companion program."""
     if parser is None:
         parser = argparse.ArgumentParser(
             description="Find text and binary files using similar rules as grin.",
@@ -903,12 +919,12 @@ def get_grind_arg_parser(parser=None):
 
     return parser
 
+
 def get_recognizer(args):
-    """ Get the file recognizer object from the configured options.
-    """
+    """Get the file recognizer object from the configured options."""
     # Make sure we have empty sets when we have empty strings.
-    skip_dirs = set([x for x in args.skip_dirs.split(',') if x])
-    skip_exts = set([x for x in args.skip_exts.split(',') if x])
+    skip_dirs = set(filter(None, args.skip_dirs.split(',')))
+    skip_exts = set(filter(None, args.skip_exts.split(',')))
     fr = FileRecognizer(
         skip_hidden_files=args.skip_hidden_files,
         skip_backup_files=args.skip_backup_files,
@@ -920,8 +936,9 @@ def get_recognizer(args):
     )
     return fr
 
+
 def get_filenames(args):
-    """ Generate the filenames to grep.
+    """Generate the filenames to grep.
 
     Parameters
     ----------
@@ -999,9 +1016,9 @@ def get_filenames(args):
         # XXX: warn about other files?
         # XXX: handle binary?
 
+
 def get_regex(args):
-    """ Get the compiled regex object to search with.
-    """
+    """Get the compiled regex object to search with."""
     # Combine all of the flags.
     flags = 0
     for flag in args.re_flags:
@@ -1021,8 +1038,9 @@ def grin_main(argv=None):
             args.before_context = args.context
             args.after_context = args.context
         args.use_color = args.force_color or (not args.no_color and
-            sys.stdout.isatty() and
-            (os.environ.get('TERM') != 'dumb'))
+                                              sys.stdout.isatty() and
+                                              (os.environ.get('TERM') !=
+                                               'dumb'))
 
         regex = get_regex(args)
         g = GrepText(regex, args)
@@ -1032,21 +1050,20 @@ def grin_main(argv=None):
             sys.stdout.write(report)
     except KeyboardInterrupt:
         raise SystemExit(0)
-    except IOError, e:
+    except IOError as e:
         if 'Broken pipe' in str(e):
-            # The user is probably piping to a pager like less(1) and has exited
-            # it. Just exit.
+            # The user is probably piping to a pager like less(1) and has
+            # exited it. Just exit.
             raise SystemExit(0)
-        raise
+        reraise(IOError, e)
 
-def print_line(filename):
-    print filename
 
 def print_null(filename):
-    # Note that the final filename will have a trailing NUL, just like 
+    # Note that the final filename will have a trailing NUL, just like
     # "find -print0" does.
     sys.stdout.write(filename)
     sys.stdout.write('\0')
+
 
 def grind_main(argv=None):
     try:
@@ -1058,10 +1075,7 @@ def grind_main(argv=None):
         args = parser.parse_args(argv[1:])
 
         # Define the output function.
-        if args.null_separated:
-            output = print_null
-        else:
-            output = print_line
+        output = print_null if args.null_separated else print
 
         if args.sys_path:
             args.dirs.extend(sys.path)
@@ -1073,12 +1087,13 @@ def grind_main(argv=None):
                     output(filename)
     except KeyboardInterrupt:
         raise SystemExit(0)
-    except IOError, e:
+    except IOError as e:
         if 'Broken pipe' in str(e):
-            # The user is probably piping to a pager like less(1) and has exited
-            # it. Just exit.
+            # The user is probably piping to a pager like less(1) and has
+            # exited it. Just exit.
             raise SystemExit(0)
         raise
+
 
 if __name__ == '__main__':
     grin_main()
