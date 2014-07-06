@@ -74,14 +74,14 @@ def unreadable_dir(filename):
 def unexecutable_dir(filename):
     """ Make a directory that does not have execute permissions.
     """
-    mkdir(filename)
+    os.mkdir(filename)
     os.chmod(filename, 0o600)
 
 
 def totally_unusable_dir(filename):
     """ Make a directory that has neither read nor execute permissions.
     """
-    mkdir(filename)
+    os.mkdir(filename)
     os.chmod(filename, 0o100)
 
 
