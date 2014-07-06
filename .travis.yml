@@ -19,4 +19,4 @@ install:
     - pip install six
     - pip install nose
 script:
-    - nosetests -s
+    - nosetests -sv
