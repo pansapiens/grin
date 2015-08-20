@@ -5,7 +5,12 @@
 
 import compiler
 from compiler.visitor import ASTVisitor, walk
-from cStringIO import StringIO
+try:
+    # Python 2
+    from StringIO import StringIO
+except ImportError:
+    # Python 3
+    from io import StringIO
 import os
 import shlex
 import sys

@@ -245,7 +245,19 @@ class GrepText(object):
         else:
             remaining = max(fp_size - fp.tell(), 0)
             target_io_size = min(READ_BLOCKSIZE, remaining)
-            block_main = fp.read(target_io_size)
+            try:
+                block_main = fp.read(target_io_size)
+            except:
+                (except_type,except_value,except_traceback) = sys.exc_info()
+                print('{}\n{}'.format('Detected unreadable character. Here are error details:', str(except_value)))
+                result = DataBlock(
+                    data = '',
+                    start = 0,
+                    end = 0,
+                    before_count = 0,
+                    is_last = True
+                )
+                return result
             is_last_block = target_io_size == remaining
 
         if prev is None:
