@@ -19,13 +19,14 @@ import argparse
 from six import b, int2byte, reraise
 from six.moves import map, filter
 
+import colorama
 
 def int2bytes(ints):
     return b('').join(map(int2byte, ints))
 
 
 #### Constants ####
-__version__ = '1.2.1'
+__version__ = '1.2.1+xy1'
 
 # Maintain the numerical order of these constants. We use them for sorting.
 PRE = -1
@@ -818,7 +819,7 @@ def get_grin_arg_parser(parser=None):
     parser.add_argument('-L', '--files-without-matches', action='store_true',
         dest='show_match', default=False,
         help="show the matches with the filenames")
-    parser.add_argument('--no-color', action='store_true', default=sys.platform == 'win32',
+    parser.add_argument('--no-color', action='store_true', default=False,
         help="do not use colorized output [default if piping the output]")
     parser.add_argument('--use-color', action='store_false', dest='no_color',
         help="use colorized output [default if outputting to a terminal]")
@@ -1039,6 +1040,7 @@ def get_regex(args):
 
 
 def grin_main(argv=None):
+    colorama.init()
     try:
         if argv is None:
             # Look at the GRIN_ARGS environment variable for more arguments.
@@ -1068,6 +1070,8 @@ def grin_main(argv=None):
             # exited it. Just exit.
             raise SystemExit(0)
         reraise(IOError, e)
+    finally:
+        colorama.deinit()
 
 
 def print_null(filename):
@@ -1078,6 +1082,7 @@ def print_null(filename):
 
 
 def grind_main(argv=None):
+    colorama.init()
     try:
         if argv is None:
             # Look at the GRIND_ARGS environment variable for more arguments.
@@ -1105,6 +1110,8 @@ def grind_main(argv=None):
             # exited it. Just exit.
             raise SystemExit(0)
         raise
+    finally:
+        colorama.deinit()
 
 
 if __name__ == '__main__':
