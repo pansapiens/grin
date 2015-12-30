@@ -75,7 +75,7 @@ def normalize_file(filename, *args):
     """
     try:
         ast = compiler.parseFile(filename)
-    except Exception, e:
+    except Exception as e:
         return StringIO('')
     ip = ImportPuller()
     walk(ast, ip)
