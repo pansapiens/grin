@@ -4,12 +4,7 @@
 """
 
 
-try:
-    # Python 2
-    from StringIO import StringIO
-except ImportError:
-    # Python 3
-    from io import StringIO
+from six.moves import StringIO
 import os
 import shlex
 import string
